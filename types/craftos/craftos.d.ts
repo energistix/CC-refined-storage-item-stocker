@@ -870,3 +870,5 @@ declare class Window implements ITerminal {
     public getPosition(): LuaMultiReturn<[number, number]>;
     public reposition(x: number, y: number, width?: number, height?: number): void;
 }
+
+/// <reference path="rsBridge.d.ts" />
