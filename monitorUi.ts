@@ -1,16 +1,18 @@
 import {
     firstStorageStackForRule,
     getAllStorageItemStacks,
+    isCraftStartFailed,
+    ruleToGenericCraftingProbe,
     totalAmountForRule,
     type StockRule,
 } from "./stock";
 
 interface StockRow {
+    rule: StockRule;
     ratio: number;
     label: string;
     have: number;
     need: number;
-    pctDisplay: number;
 }
 
 function truncate(s: string, maxLen: number): string {
@@ -25,6 +27,18 @@ function strRep(s: string, n: number): string {
     return r;
 }
 
+function stripMonitorBrackets(s: string): string {
+    return s.split("[").join("").split("]").join("");
+}
+
+function rowTextColor(bridge: RsBridgePeripheral, r: StockRow): Color {
+    if (r.have >= r.need) return colors.green;
+    const probe = ruleToGenericCraftingProbe(r.rule);
+    if (bridge.isCrafting(probe) === true) return colors.orange;
+    if (isCraftStartFailed(r.rule)) return colors.red;
+    return colors.yellow;
+}
+
 /** Build sorted rows; one storage snapshot, client-side match per rule. */
 function buildRows(bridge: RsBridgePeripheral, rules: StockRule[]): StockRow[] {
     const stacks = getAllStorageItemStacks(bridge);
@@ -35,65 +49,63 @@ function buildRows(bridge: RsBridgePeripheral, rules: StockRule[]): StockRow[] {
         const first = firstStorageStackForRule(stacks, rule);
         const need = rule.minCount;
         const ratio = need > 0 ? have / need : 1;
-        const label =
+        const rawLabel =
             first != null && first.displayName != null && first.displayName !== ""
                 ? first.displayName
                 : first != null && first.name != null && first.name !== ""
                   ? first.name
                   : rule.name;
-        const pctDisplay = Math.floor(Math.min(1, ratio) * 100);
-        rows.push({ ratio, label, have, need, pctDisplay });
+        rows.push({ rule, ratio, label: stripMonitorBrackets(rawLabel), have, need });
     }
     const shortageFirst = settings.get("rs_stocker.monitor_shortage_first", true);
     const asc = shortageFirst !== false;
     rows.sort((a, b) => {
-        const dr = asc ? a.ratio - b.ratio : b.ratio - a.ratio;
+        const dr = asc ? Math.min(a.ratio, 1) - Math.min(b.ratio, 1) : Math.min(b.ratio, 1) - Math.min(a.ratio, 1);
         if (dr !== 0) return dr;
+        if (b.need !== a.need) return b.need - a.need;
         return a.label < b.label ? -1 : a.label > b.label ? 1 : 0;
     });
     return rows;
 }
 
+function writePaddedLine(monitor: ITerminal, y: number, w: number, text: string): void {
+    const line = text.length <= w ? text + strRep(" ", w - text.length) : text.substring(0, w);
+    monitor.setCursorPos(1, y);
+    monitor.write(line);
+}
+
 export function drawMonitor(bridge: RsBridgePeripheral, monitor: ITerminal, rules: StockRule[]): void {
     const prev = term.redirect(monitor);
     const [w, h] = monitor.getSize();
-    monitor.setBackgroundColor(colors.black);
-    monitor.setTextColor(colors.white);
-    monitor.clear();
-    monitor.setCursorPos(1, 1);
-    monitor.write("RS minimum stock");
-    monitor.setCursorPos(1, 2);
-    const [tw] = term.getSize();
-    const line = strRep("-", Math.min(w, tw, 40));
-    monitor.write(line);
-
-    const headerRows = 2;
-    const maxData = h - headerRows;
-    if (maxData < 1) {
-        term.redirect(prev);
-        return;
-    }
-
     const rows = buildRows(bridge, rules);
-    const colAmt = 12;
-    const colPct = 5;
-    const nameW = Math.max(8, w - colAmt - colPct - 2);
+    const maxData = Math.max(0, h - 2);
+    let dataIdx = 0;
 
-    let y = headerRows + 1;
-    for (let i = 0; i < rows.length && i < maxData; i++) {
-        const r = rows[i];
-        monitor.setCursorPos(1, y);
-        if (r.ratio < 0.25) monitor.setTextColor(colors.red);
-        else if (r.ratio < 1) monitor.setTextColor(colors.yellow);
-        else monitor.setTextColor(colors.lime);
-        const nameCol = truncate(r.label, nameW);
-        const amtStr = `${r.have}/${r.need}`;
-        const pctStr = `${r.pctDisplay}%`;
-        const pad1 = Math.max(1, nameW - nameCol.length + 1);
-        const pad2 = Math.max(1, colAmt - amtStr.length + 1);
-        monitor.write(nameCol + strRep(" ", pad1) + amtStr + strRep(" ", pad2) + pctStr);
-        y++;
+    for (let y = 1; y <= h; y++) {
+        monitor.setBackgroundColor(colors.black);
+        if (y <= 2) {
+            monitor.setTextColor(colors.white);
+            const text = y === 1 ? "RS minimum stock" : strRep("-", Math.min(w, 40));
+            writePaddedLine(monitor, y, w, text);
+        } else if (dataIdx < rows.length && dataIdx < maxData) {
+            const r = rows[dataIdx];
+            monitor.setTextColor(rowTextColor(bridge, r));
+            const amtStr = `${r.have}/${r.need}`;
+            const nameMax = Math.max(1, w - amtStr.length - 1);
+            let nameCol = truncate(r.label, nameMax);
+            let gap = w - nameCol.length - amtStr.length;
+            if (gap < 1) {
+                const nm = Math.max(1, w - amtStr.length - 1);
+                nameCol = truncate(r.label, nm);
+                gap = w - nameCol.length - amtStr.length;
+            }
+            writePaddedLine(monitor, y, w, nameCol + strRep(" ", gap) + amtStr);
+            dataIdx++;
+        } else {
+            monitor.setTextColor(colors.white);
+            writePaddedLine(monitor, y, w, "");
+        }
     }
-    monitor.setTextColor(colors.white);
+
     term.redirect(prev);
 }

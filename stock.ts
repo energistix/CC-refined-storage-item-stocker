@@ -1,4 +1,11 @@
-/** Persistence + AP unified storage bridge (RS/ME). */
+/**
+ * Persistence + RS bridge integration aligned with vendored Advanced Peripherals sources.
+ *
+ * - `ItemFilter.parse` ([ItemFilter.java](AdvancedPeripherals/src/main/java/de/srendi/advancedperipherals/common/util/inventory/ItemFilter.java)):
+ *   `getItems`, `getCraftableItems`, `craftItem` — empty `{}` lists all; ignores `type` and `nbt`.
+ * - `GenericFilter.parseGeneric` ([GenericFilter.java](AdvancedPeripherals/src/main/java/de/srendi/advancedperipherals/common/util/inventory/GenericFilter.java)):
+ *   `isCraftable`, `isCrafting` — table must have `type` or `name` or Lua throws.
+ */
 
 import { pretty_print } from "cc.pretty";
 
@@ -9,8 +16,8 @@ declare function pairs<K, V>(t: LuaTable<K, V>): LuaIterable<LuaMultiReturn<[K, 
 
 export const RULES_FILE = "stock_rules.txt";
 
-/** Full item listing (AP generic filter requires `type` and/or `name`; `{}` crashes). */
-const ALL_ITEMS_FILTER: RsBridgeItemFilter = { type: "item" };
+/** Match all items — `ItemFilter.parse` empty table ([RSBridgePeripheral.getItems](AdvancedPeripherals/src/main/java/de/srendi/advancedperipherals/common/addons/computercraft/peripheral/RSBridgePeripheral.java)). */
+const ALL_ITEMS_FILTER: RsBridgeItemFilterParse = {};
 
 export function luaSeqToArray<T>(t: LuaTable<number, T> | T[] | undefined | null): T[] {
     if (t == null) return [];
@@ -43,7 +50,7 @@ export function unwrapItemTable(
 }
 
 /** All stacks matching filter; empty on nil (parse error). */
-export function getItemsList(bridge: RsBridgePeripheral, filter: RsBridgeItemFilter): RsBridgeItemInfo[] {
+export function getItemsList(bridge: RsBridgePeripheral, filter: RsBridgeItemFilterParse): RsBridgeItemInfo[] {
     const [tbl] = bridge.getItems(filter);
     return unwrapItemTable(tbl);
 }
@@ -69,7 +76,7 @@ export function stackQuantity(stack: RsBridgeItemInfo | undefined | null): numbe
 
 /**
  * Whether a stack from `getItems({})` counts toward this rule.
- * Storage rows may omit `fingerprint`; then we match name + nbt like the craftable rule.
+ * Prefer fingerprint; fall back to legacy `nbt` strings on old saved rules (AP Lua objects use `components`, not `nbt`).
  */
 export function ruleMatchesStorageStack(rule: StockRule, stack: RsBridgeItemInfo): boolean {
     if (stack.name !== rule.name) return false;
@@ -113,19 +120,36 @@ export function tryGetFirstStack(bridge: RsBridgePeripheral, rule: StockRule): R
 export interface StockRule {
     fingerprint?: string;
     name: string;
+    /** Legacy persisted field; RS bridge `ItemFilter` does not read `nbt` — matching only client-side / old saves. */
     nbt?: string;
+    /** Legacy persisted field; not sent on filters (generic parse + component tables are fragile). */
+    components?: LuaTable<string, unknown>;
     minCount: number;
 }
 
-/** Filter for isCraftable / isCrafting / craftItem — always includes registry `name` (AP generic filter requires it). */
-export function ruleToFilter(rule: StockRule): RsBridgeItemFilter {
-    // if (rule.fingerprint != null && rule.fingerprint !== "") {
-    //     return { name: rule.name, type: "item", fingerprint: rule.fingerprint };
-    // }
-    if (rule.nbt != null && rule.nbt !== "") {
-        return { name: rule.name, nbt: rule.nbt, type: "item" };
+function ruleNameOrFallback(rule: StockRule): string {
+    return rule.name != null && rule.name !== "" ? rule.name : "minecraft:stone";
+}
+
+/**
+ * `GenericFilter.parseGeneric` — must include `type` or `name`.
+ * Omit `fingerprint`: when set, `ItemFilter.test` matches fingerprint only and can disagree with pattern-output checks.
+ */
+export function ruleToGenericCraftingProbe(rule: StockRule): RsBridgeGenericFilter {
+    return { name: ruleNameOrFallback(rule), type: "item" };
+}
+
+/**
+ * `ItemFilter.parse` for `craftItem` — `name`, `count`, optional `fingerprint`. No `nbt` / `type` (ignored by parse).
+ * Official AP builds the requested stack from `ItemFilter.toItemStack()`; parsed Lua `components` affect `test()` but
+ * may not be applied there, so variant crafts can be unreliable—fingerprint + base `name` is the practical option.
+ */
+export function ruleToCraftItemFilter(rule: StockRule, need: number): RsBridgeItemFilterParse {
+    const f: RsBridgeItemFilterParse = { name: ruleNameOrFallback(rule), count: need };
+    if (rule.fingerprint != null && rule.fingerprint !== "") {
+        (f as { name: string; count: number; fingerprint: string }).fingerprint = rule.fingerprint;
     }
-    return { name: rule.name, type: "item" };
+    return f;
 }
 
 export function craftableToRule(item: RsBridgeItemInfo, minCount: number): StockRule {
@@ -185,26 +209,50 @@ export function loadCraftables(bridge: RsBridgePeripheral): RsBridgeItemInfo[] {
     return unwrapItemTable(tbl);
 }
 
-function craftFilterWithCount(rule: StockRule, need: number): RsBridgeItemFilter {
-    if (rule.fingerprint != null && rule.fingerprint !== "") {
-        return { name: rule.name, type: "item", fingerprint: rule.fingerprint, count: need };
-    }
-    if (rule.nbt != null && rule.nbt !== "") {
-        return { name: rule.name, nbt: rule.nbt, type: "item", count: need };
-    }
-    return { name: rule.name, type: "item", count: need };
+/** Stable key for per-rule UI / craft-failure tracking. */
+export function stockRuleKey(rule: StockRule): string {
+    const fp = rule.fingerprint ?? "";
+    const nb = rule.nbt ?? "";
+    return `${rule.name}\0${fp}\0${nb}`;
+}
+
+const craftStartFailed: Record<string, true> = {};
+
+export function isCraftStartFailed(rule: StockRule): boolean {
+    return craftStartFailed[stockRuleKey(rule)] === true;
 }
 
 export function restockTick(bridge: RsBridgePeripheral, rules: StockRule[]): void {
     const stacks = getAllStorageItemStacks(bridge);
     for (const rule of rules) {
         if (rule.minCount <= 0) continue;
-        const filter = ruleToFilter(rule);
+        const key = stockRuleKey(rule);
         const have = totalAmountForRule(stacks, rule);
-        if (have >= rule.minCount) continue;
-        if (bridge.isCraftable({name: rule.name}) !== true) continue;
-        if (bridge.isCrafting({name: rule.name}) === true) continue;
-        const need = rule.minCount - have;
-        pcall(() => bridge.craftItem({name: rule.name, count: need}));
+        if (have >= rule.minCount) {
+            delete craftStartFailed[key];
+            continue;
+        }
+        const probe = ruleToGenericCraftingProbe(rule);
+        pretty_print(probe);
+        if (bridge.isCraftable(probe) === false) continue;
+        if (bridge.isCrafting(probe) === true) continue;
+        const needAmt = rule.minCount - have;
+        const filter = ruleToCraftItemFilter(rule, needAmt);
+        let job: ApCraftingJobHandle | null = null;
+        const [okCraft, thrown] = pcall(() => {
+            const [j, msg] = bridge.craftItem(filter);
+            job = j;
+            if (j == null && msg != null && msg !== "") {
+                pretty_print(msg);
+            }
+        });
+        if (!okCraft) {
+            pretty_print(thrown);
+            craftStartFailed[key] = true;
+        } else if (job == null) {
+            craftStartFailed[key] = true;
+        } else {
+            delete craftStartFailed[key];
+        }
     }
 }
