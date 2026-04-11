@@ -10,9 +10,15 @@ import { TerminalStockerUi } from "./terminalUi";
 
 const SET_MON = "rs_stocker.monitor_side";
 const SET_INTERVAL = "rs_stocker.refresh_seconds";
+const SET_SHORTAGE_FIRST = "rs_stocker.monitor_shortage_first";
 
 settings.define(SET_MON, { description: "Monitor peripheral side", default: "top", type: "string" });
 settings.define(SET_INTERVAL, { description: "Restock and UI refresh interval (seconds)", default: 3, type: "number" });
+settings.define(SET_SHORTAGE_FIRST, {
+    description: "Monitor: true = lowest fill ratio at top (need stock most). false = reverse order.",
+    default: true,
+    type: "boolean",
+});
 
 function readInterval(): number {
     const v = settings.get(SET_INTERVAL, 3);
@@ -29,7 +35,12 @@ function main(): void {
         return;
     }
     const bridge = bridgeRaw as RsBridgePeripheral;
-    const bridgeName = peripheral.getName(bridgeRaw);
+
+    if (!bridge.isConnected()) {
+        print("RS bridge is not connected to a storage grid.");
+    } else if (!bridge.isOnline()) {
+        print("Storage grid is offline; stocking paused until online.");
+    }
 
     const monSide = settings.get(SET_MON, "top") as string;
     const monWrap = peripheral.wrap(monSide);
@@ -40,7 +51,7 @@ function main(): void {
 
     const tickSec = readInterval();
     const rules = loadRules(RULES_FILE);
-    let craftables = loadCraftables(bridge, bridgeName);
+    let craftables = loadCraftables(bridge);
 
     const redrawMonitor = () => {
         if (monitor != null) drawMonitor(bridge, monitor, rules);
@@ -60,8 +71,10 @@ function main(): void {
         if (ev == null) continue;
 
         if (ev instanceof event.TimerEvent && ev.id === timer) {
-            restockTick(bridge, rules);
-            craftables = loadCraftables(bridge, bridgeName);
+            if (bridge.isConnected() && bridge.isOnline()) {
+                restockTick(bridge, rules);
+            }
+            craftables = loadCraftables(bridge);
             redrawMonitor();
             ui.draw(craftables);
             timer = os.startTimer(tickSec);

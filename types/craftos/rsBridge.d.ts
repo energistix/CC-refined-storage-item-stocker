@@ -1,23 +1,43 @@
 /** @noSelfInFile **/
 
-/** Item filter for RS Bridge methods (see Advanced Peripherals docs). */
+/**
+ * Advanced Peripherals unified ME/RS storage bridge (AP 0.8 / 0.7 on 1.21.1+).
+ * @see https://docs.advanced-peripherals.de/latest/guides/storage_system_functions/
+ * Item filters: https://docs.advancedperipherals.de/guides/filters
+ */
+
+/**
+ * Item filter per AP filters guide. Generic APIs (`isCraftable`, `craftItem`, …) expect a real item id:
+ * always pass `name` (registry id) and usually `type = "item"`. `fingerprint` / `nbt` narrow the match when set.
+ */
 type RsBridgeItemFilter =
-    | { name: string; count?: number; nbt?: string }
-    | { fingerprint: string; count?: number };
+    | {
+          name: string;
+          count?: number;
+          nbt?: string;
+          fingerprint?: string;
+          type?: "item" | "fluid" | "chemical";
+      }
+    /** List-all style (e.g. every craftable item). */
+    | { type: "item" | "fluid" | "chemical"; count?: number };
 
-/** Fluid filter for craftFluid / fluid listings. */
 type RsBridgeFluidFilter =
-    | { name: string; count?: number; nbt?: string }
-    | { fingerprint: string; count?: number };
+    | { name: string; count?: number; nbt?: string; type?: "fluid" | "chemical" }
+    | { fingerprint: string; count?: number }
+    | { type: "fluid" | "chemical"; count?: number };
 
+/** Item stack from storage queries (see AP Lua Objects / Item). */
 interface RsBridgeItemInfo {
     name: string;
     fingerprint?: string;
-    amount: number;
-    displayName: string;
-    isCraftable: boolean;
+    /** Prefer for grid stack size in getItems (may differ from `amount` in some builds). */
+    count?: number;
+    /** May be present; do not assume it equals stack size—use `count` when set. */
+    amount?: number;
+    displayName?: string;
+    isCraftable?: boolean;
     nbt?: string;
-    tags: string[];
+    tags?: string[];
 }
 
 interface RsBridgeFluidInfo {
@@ -27,46 +47,63 @@ interface RsBridgeFluidInfo {
     displayName: string;
     isCraftable: boolean;
     nbt?: string;
-    tags: string[];
+    tags?: string[];
 }
 
-interface RsBridgePatternSlot {
-    name?: string;
-    fingerprint?: string;
-    count?: number;
-    amount?: number;
-    nbt?: string;
-    displayName?: string;
+/** Opaque craft job object returned by craftItem (optional tracking). */
+type ApCraftingJobHandle = LuaTable<string, unknown>;
+
+interface ApPatternFilter {
+    input?: RsBridgeItemFilter | RsBridgeFluidFilter;
+    output?: RsBridgeItemFilter | RsBridgeFluidFilter;
 }
 
-interface RsBridgePattern {
-    inputs: RsBridgePatternSlot[];
-    outputs: RsBridgePatternSlot[];
-    byproducts: RsBridgePatternSlot[];
-    processing: boolean;
+/** Pattern entry from getPatterns (subset of fields). */
+interface ApStoragePattern {
+    primaryOutput?: RsBridgeItemInfo | RsBridgeFluidInfo;
+    outputs?: (RsBridgeItemInfo | RsBridgeFluidInfo)[];
+    inputs?: (RsBridgeItemInfo | RsBridgeFluidInfo)[];
+    patternType?: string;
+    id?: string;
 }
 
-/** Advanced Peripherals RS Bridge — Refined Storage integration. */
 declare class RsBridgePeripheral implements IPeripheral {
-    craftItem(item: RsBridgeItemFilter): boolean;
-    craftFluid(fluid: RsBridgeFluidFilter, amount: number): boolean;
-    getItem(item: RsBridgeItemFilter): RsBridgeItemInfo;
-    importItem(item: RsBridgeItemFilter, direction: string): number;
-    exportItem(item: RsBridgeItemFilter, direction: string): number;
-    importItemFromPeripheral(item: RsBridgeItemFilter, container: string): number;
-    exportItemToPeripheral(item: RsBridgeItemFilter, container: string): number;
-    getMaxItemDiskStorage(): number;
-    getMaxFluidDiskStorage(): number;
-    getMaxItemExternalStorage(): number;
-    getMaxFluidExternalStorage(): number;
-    getEnergyStorage(): number;
-    getMaxEnergyStorage(): number;
+    isConnected(): boolean;
+    isOnline(): boolean;
+
+    getItem(filter: RsBridgeItemFilter): LuaMultiReturn<[RsBridgeItemInfo | null, string | undefined]>;
+    getItems(filter: RsBridgeItemFilter): LuaMultiReturn<[LuaTable<number, RsBridgeItemInfo> | null, string | undefined]>;
+    getCraftableItems(filter: RsBridgeItemFilter): LuaMultiReturn<[LuaTable<number, RsBridgeItemInfo> | null, string | undefined]>;
+
+    getFluid(filter: RsBridgeFluidFilter): LuaMultiReturn<[RsBridgeFluidInfo | null, string | undefined]>;
+    getFluids(filter: RsBridgeFluidFilter): LuaMultiReturn<[LuaTable<number, RsBridgeFluidInfo> | null, string | undefined]>;
+    getCraftableFluids(filter: RsBridgeFluidFilter): LuaMultiReturn<[LuaTable<number, RsBridgeFluidInfo> | null, string | undefined]>;
+
+    craftItem(filter: RsBridgeItemFilter): LuaMultiReturn<[ApCraftingJobHandle | null, string | undefined]>;
+    craftFluid(filter: RsBridgeFluidFilter): LuaMultiReturn<[ApCraftingJobHandle | null, string | undefined]>;
+
+    isCraftable(filter: RsBridgeItemFilter | RsBridgeFluidFilter): boolean | undefined;
+    isCrafting(filter: RsBridgeItemFilter | RsBridgeFluidFilter): boolean | undefined;
+
+    getCraftingTasks(): LuaTable<number, ApCraftingJobHandle>;
+    getCraftingJob(id: number): LuaMultiReturn<[ApCraftingJobHandle | null, string | undefined]>;
+    cancelCraftingTasks(filter: RsBridgeItemFilter | RsBridgeFluidFilter): number;
+
+    getPatterns(patternFilter?: ApPatternFilter): LuaMultiReturn<[LuaTable<number, ApStoragePattern> | null, string | undefined]>;
+
+    importItem(filter: RsBridgeItemFilter, target: string): LuaMultiReturn<[LuaTable | null, string | undefined]>;
+    exportItem(filter: RsBridgeItemFilter, target: string): LuaMultiReturn<[LuaTable | null, string | undefined]>;
+
+    getStoredEnergy(): number;
+    getEnergyCapacity(): number;
     getEnergyUsage(): number;
-    getPattern(item: RsBridgeItemFilter): LuaMultiReturn<[RsBridgePattern | null, string | undefined]>;
-    isItemCrafting(item: RsBridgeItemFilter): boolean;
-    isItemCraftable(item: RsBridgeItemFilter): boolean;
-    listCraftableItems(): RsBridgeItemInfo[];
-    listCraftableFluids(): RsBridgeFluidInfo[];
-    listItems(): RsBridgeItemInfo[];
-    listFluids(): RsBridgeFluidInfo[];
+
+    getTotalExternItemStorage(): number;
+    getTotalExternFluidStorage(): number;
+    getTotalItemStorage(): number;
+    getTotalFluidStorage(): number;
+    getUsedItemStorage(): number;
+    getUsedFluidStorage(): number;
+    getAvailableItemStorage(): number;
+    getAvailableFluidStorage(): number;
 }

@@ -1,4 +1,9 @@
-import { ruleToFilter, tryGetItem, type StockRule } from "./stock";
+import {
+    firstStorageStackForRule,
+    getAllStorageItemStacks,
+    totalAmountForRule,
+    type StockRule,
+} from "./stock";
 
 interface StockRow {
     ratio: number;
@@ -20,21 +25,32 @@ function strRep(s: string, n: number): string {
     return r;
 }
 
-/** Build sorted rows (lowest fill ratio first). */
+/** Build sorted rows; one storage snapshot, client-side match per rule. */
 function buildRows(bridge: RsBridgePeripheral, rules: StockRule[]): StockRow[] {
+    const stacks = getAllStorageItemStacks(bridge);
     const rows: StockRow[] = [];
     for (const rule of rules) {
         if (rule.minCount <= 0) continue;
-        const info = tryGetItem(bridge, ruleToFilter(rule));
-        if (info === undefined) continue;
-        const have = info.amount;
+        const have = totalAmountForRule(stacks, rule);
+        const first = firstStorageStackForRule(stacks, rule);
         const need = rule.minCount;
         const ratio = need > 0 ? have / need : 1;
-        const label = info.displayName !== "" ? info.displayName : info.name;
+        const label =
+            first != null && first.displayName != null && first.displayName !== ""
+                ? first.displayName
+                : first != null && first.name != null && first.name !== ""
+                  ? first.name
+                  : rule.name;
         const pctDisplay = Math.floor(Math.min(1, ratio) * 100);
         rows.push({ ratio, label, have, need, pctDisplay });
     }
-    rows.sort((a, b) => a.ratio - b.ratio);
+    const shortageFirst = settings.get("rs_stocker.monitor_shortage_first", true);
+    const asc = shortageFirst !== false;
+    rows.sort((a, b) => {
+        const dr = asc ? a.ratio - b.ratio : b.ratio - a.ratio;
+        if (dr !== 0) return dr;
+        return a.label < b.label ? -1 : a.label > b.label ? 1 : 0;
+    });
     return rows;
 }
 

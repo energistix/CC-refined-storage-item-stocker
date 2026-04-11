@@ -25,8 +25,8 @@ export class TerminalStockerUi {
         const out: RsBridgeItemInfo[] = [];
         for (let i = 0; i < craftables.length; i++) {
             const c = craftables[i];
-            const dn = c.displayName.toLowerCase();
-            const n = c.name.toLowerCase();
+            const dn = (c.displayName ?? "").toLowerCase();
+            const n = (c.name ?? "").toLowerCase();
             if (dn.indexOf(q) !== -1 || n.indexOf(q) !== -1) out.push(c);
         }
         return out;
@@ -122,7 +122,8 @@ export class TerminalStockerUi {
             const cur = findRuleIndex(this.rules, item);
             const minStr = cur >= 0 ? ` [min ${this.rules[cur].minCount}]` : "";
             const prefix = idx === this.sel ? ">" : " ";
-            const name = item.displayName !== "" ? item.displayName : item.name;
+            const name =
+                item.displayName != null && item.displayName !== "" ? item.displayName : (item.name ?? "?");
             const line = `${prefix} ${name}${minStr}`;
             term.write(truncateLine(line, w));
         }
@@ -137,7 +138,12 @@ export class TerminalStockerUi {
         term.setCursorPos(1, 1);
         term.write("Minimum stock target");
         term.setCursorPos(1, 2);
-        const title = item != null ? (item.displayName !== "" ? item.displayName : item.name) : "?";
+        const title =
+            item != null
+                ? item.displayName != null && item.displayName !== ""
+                    ? item.displayName
+                    : (item.name ?? "?")
+                : "?";
         term.write(truncateLine(title, w));
         term.setCursorPos(1, 4);
         term.write("Amount in system (0 or blank removes):");
