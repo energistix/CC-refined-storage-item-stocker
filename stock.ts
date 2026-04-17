@@ -233,7 +233,6 @@ export function restockTick(bridge: RsBridgePeripheral, rules: StockRule[]): voi
             continue;
         }
         const probe = ruleToGenericCraftingProbe(rule);
-        pretty_print(probe);
         if (bridge.isCraftable(probe) === false) continue;
         if (bridge.isCrafting(probe) === true) continue;
         const needAmt = rule.minCount - have;

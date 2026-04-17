@@ -64,6 +64,9 @@ export class TerminalStockerUi {
         this.mode = "browse";
         this.editing = null;
         this.editBuffer = "";
+        this.search = "";
+        this.sel = 0;
+        this.scroll = 0;
     }
 
     private cancelEdit(): void {
